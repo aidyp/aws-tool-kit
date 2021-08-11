@@ -1,0 +1,91 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Deploys a proper webserver with all the bells and whistles"
+
+Mappings:
+  RegionMap:
+    eu-west-1:
+      HVM64: "ami-0f89681a05a3a9de7"
+
+Parameters:
+  DefaultCIDR:
+    Type: String
+    Default: "10.0.0.0/24"
+
+  PubSubnet1:
+    Type: String
+    Default: "10.0.0.0/26"
+  
+  PubSubnet2:
+    Type: String
+    Default: "10.0.0.64/26"
+
+  PrivSubnet1:
+    Type: String
+    Default: "10.0.0.128/26"
+
+  PrivSubnet2:
+    Type: String
+    Default: "10.0.0.192/26"
+
+Resources:
+  # Create a VPC 
+  WebServerVPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      CidrBlock: !Ref DefaultCIDR
+
+  
+  # 4 Subnets, 2 public, 2 private, for ALB, EC2s and NAT 
+  PrivateSubnet1:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+        AvailabilityZone: !Sub "${AWS::Region}a"
+        VpcId: !Ref WebServerVPC
+        CidrBlock: !Ref PrivSubnet1 
+        Tags:
+          - Key: Name
+            Value: WebServerVPC-PrivateSubnet-1
+  
+  PrivateSubnet2:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+        AvailabilityZone: !Sub "${AWS::Region}a"
+        VpcId: !Ref WebServerVPC
+        CidrBlock: !Ref PrivSubnet2
+        Tags:
+          - Key: Name
+            Value: WebServerVPC-PrivateSubnet-2
+          
+  PublicSubnet1:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+        AvailabilityZone: !Sub "${AWS::Region}a"
+        VpcId: !Ref WebServerVPC
+        CidrBlock: !Ref PubSubnet1 
+        Tags:
+          - Key: Name
+            Value: WebServerVPC-PublicSubnet-1
+    
+  PublicSubnet2:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+        AvailabilityZone: !Sub "${AWS::Region}a"
+        VpcId: !Ref WebServerVPC
+        CidrBlock: !Ref PubSubnet2
+        Tags:
+          - Key: Name
+            Value: WebServerVPC-PublicSubnet-2
+
+
+
+
+  # Application Load Balancer 
+
+  ALBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Enable HTTP access via port 80 
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '80'
+          
