@@ -217,6 +217,21 @@ Resources:
         
 
         # Endpoints and roles for SSM access -- don't just use ssh kids ;) 
+        SSMSG:
+          Type: AWS::EC2::SecurityGroup 
+          Properties: 
+            GroupDescription: Allow all 
+            VpcId: !Ref WebServerVPC 
+            SecurityGroupIngress:
+              - IpProtocol: -1 
+                FromPort: -1 
+                ToPort: -1 
+                CidrIp: 0.0.0.0/0 
+              Tags: 
+                - Key: Name 
+                  Value: ssm-sg
+
+
         SSMEndPoint:
           Type: AWS::EC2::VPCEndpoint
           Properties: 
@@ -234,3 +249,69 @@ Resources:
               - !Ref PrivateSubnet2 
             VpcId: !Ref WebServerVPC
             VpcEndpointType: Interface
+
+        SSMMessagesEndPoint:
+          Type: AWS::EC2::VPCEndpoint
+          Properties:
+            PrivateDnsEnabled: 'true'
+            SecurityGroupIds:
+              - !Ref SSMSG
+            ServiceName:
+              !Join 
+              - ''
+              - - 'com.amazonaws.'
+                - !Ref 'AWS::Region'
+                - '.ssmmessages'
+            SubnetIds:
+              - !Ref PrivateSubnet1
+              - !Ref PrivateSubnet2 
+            VpcId: !Ref WebServerVPC
+            VpcEndpointType: Interface
+        
+
+        EC2MessagesEndPoint:
+          Type: AWS::EC2::VPCEndpoint
+          Properties:
+            PrivateDnsEnabled: 'true'
+            SecurityGroupIds:
+              - !Ref SSMSG
+            ServiceName:
+              !Join
+                - ''
+                - - 'com.amazonaws.'
+                  - !Ref 'AWS::Region'
+                  - '.ec2messages'
+            SubnetIds:
+              - !Ref PrivateSubnet1
+              - !Ref PrivateSubnet2
+            VpcId: !Ref WebServerVPC
+            VpcEndpointType: Interface
+
+        EC2EndPoint:
+          Type: AWS::EC2::VPCEndpoint
+          Properties:
+            PrivateDnsEnabled: 'true'
+            SecurityGroupIds:
+              - !Ref SSMSG
+            ServiceName:
+              !Join 
+              - ''
+              - - 'com.amazonaws.'
+                - !Ref 'AWS::Region'
+                - '.ec2'
+            SubnetIds:
+              - !Ref PrivateSubnet1 
+              - !Ref PrivateSubnet2
+            VpcId: !Ref WebServerVPC 
+            VpcEndpointType: Interface 
+
+  Outputs:
+    VPCID:
+      Description: ID of the Web Server VPC 
+      Value: !Ref WebServerVPC
+      Export:
+        Name: !Sub "${AWS::StackName}-VPC"
+    
+    ALBDNSName:
+      Description: The DNS name of the application load balancer 
+      Value: !GetAtt ApplicationLoadBalancer.DNSName 
