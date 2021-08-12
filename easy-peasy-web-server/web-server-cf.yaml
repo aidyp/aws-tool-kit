@@ -79,7 +79,7 @@ Resources:
 
 
 
-  # Application Load Balancer 
+  # Application Load Balancer, Security Group, and Target Groups 
 
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -88,4 +88,149 @@ Resources:
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        VpcId: !Ref WebServerVPC
+        Tags:
+          - Key: Name 
+            Value: alb-security-group
+  
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer 
+    Properties:
+      IpAddressType: ipv4 
+      Name: ALB-for-webserver
+      Scheme: internet-facing 
+      SecurityGroups:
+        - !Ref ALBSecurityGroup 
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      Type: application 
+
+  ALBTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckEnabled: true 
+      HealthCheackPatch: /index.html 
+      HealthCheckPort: 80 
+      HealthCheckProtocol: HTTP 
+      Name: Webserver-Target-Group
+      Port: 80
+      Protocol: HTTP 
+      VpcId: !Ref WebServerVPC
+
+  ALBListener:
+    DependsOn: ApplicationLoadBalancer
+    Type: AWS::ElasticLoadBalancingV2::Listener 
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP 
+      DefaultActions:
+        - Type: "forward"
+          TargetGroupArn: !Ref ALBTargetGroup
+
+
+  # Launch template -- change if you want to run a different kind of webserver
+  # This one just tells you hello world and has some details about the instance
+  ASGLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate 
+    Properties:
+      LaunchTemplateName: !Sub ${AWS::StackName}-launch-template 
+      LaunchTemplateData:
+        CreditSpecification:
+          CpuCredits: Unlimited 
+        ImageId: !Ref AmiID 
+        InstanceType: t2.micro 
+        IamInstanceProfile:
+          Arn: !GetAtt ASGInstanceProfile.Arn
+        Monitoring:
+          Enabled: true 
+        SecurityGroupIds:
+          - !Ref WebServerSecurityGroup
+            !Ref SSMSG # For Systems Manager -- gotta do it Proper!
+        UserData:
+          Fn::Base64: !Sub | 
+            #!/bin/bash
+            yum update -y 
+            yum install -y httpd php 
+            echo '<h1>Hello World!</h1> > /var/www/html/index.html'
+            systemctl start httpd 
+            systemctl enable httpd 
+            usermod -a -G apache ec2-user 
+            chown -R ec2-user: apache /var/www 
+            chmod 2775 /var/www 
+            find /var/www -type d -exec chmod 2775 {} \;
+            find /var/www -type f -exec chmod 0664 {} \;
+
+            cat << 'EOF' > /var/www/html/index.php
+              <!DOCTYPE html> 
+              <html>
+              <body>
+                <center>
+
+                  <?php 
+                  $url = "http://169.254.169.254/latest/meta-data/instance-id";
+                  #instance_id = file_get_contents($url);
+                  $url = "http://169.254.169.254/latest/meta-data/placement/availability-zone";
+                  $zone = file_get_contents($url)
+                  ?>
+
+                  <h2>EC2 Instance ID: <?php echo $instance_id ?></h2>
+                  <h2>Availability Zone: <?php echo $zone ?></h2>
+
+                </center>
+              </body>
+              </html>
+            EOF
+          TagSpecifications:
+            - ResourceType: instance 
+              Tags:
+                - Key: Name 
+                  Value: webserver-inst
           
+
+        ASGInstanceProfile:
+          Type: "AWS::IAM::InstanceProfile"
+          Properties:
+            Path: "/"
+            Roles:
+              - 
+                Ref: WorkloadInstanceRole
+        
+        # Role for the webserver
+        WorkloadInstanceRole:
+          Type: AWS::IAM::Role 
+          Properties:
+            AssumeRolePolicyDocument:
+              Version: 2012-10-17
+              Statement:
+                -  
+                  Effect: Allow 
+                  Principal:
+                    Service: ec2.amazonaws.com
+                  Action: 'sts:AssumeRole'
+            ManagedPolicyArns:
+              - arn:aws:iam:aws:policy/AmazonSSMManagedInstanceCore 
+              - arn:aws:iam:poilcy/CloudWatchFullAccess 
+        
+
+        # Endpoints and roles for SSM access -- don't just use ssh kids ;) 
+        SSMEndPoint:
+          Type: AWS::EC2::VPCEndpoint
+          Properties: 
+            PrivateDnsEnabled: 'true'
+            SecurityGroupIds:
+              - !Ref SSMSG
+            ServiceName:
+              !Join 
+              - ''
+              - - 'com.amazonaws.'
+                - !Ref 'AWS::Region'
+                - '.ssm'
+            SubnetIds:
+              - !Ref PrivateSubnet1 
+              - !Ref PrivateSubnet2 
+            VpcId: !Ref WebServerVPC
+            VpcEndpointType: Interface
