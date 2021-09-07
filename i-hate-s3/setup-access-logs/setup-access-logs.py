@@ -164,9 +164,8 @@ if __name__ == '__main__':
     try:
         source_bucket = sys.argv[1]
     except:
-        print(athena_logs_setup_query_sql)
         print('Usage: python setup-access-logs.py <source_bucket>')
-        sys.exit
+        sys.exit(0)
 
     access_log_bucket = create_logging_bucket(source_bucket)
     print(access_log_bucket)
