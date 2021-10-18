@@ -27,12 +27,24 @@ Parameters:
     Type: String
     Default: "10.0.0.192/26"
 
+  AmiID:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Description: 'ID of the AMI'
+    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+
 Resources:
   # Create a VPC 
   WebServerVPC:
     Type: "AWS::EC2::VPC"
     Properties:
       CidrBlock: !Ref DefaultCIDR
+      EnableDnsSupport: true 
+      EnableDnsHostnames: true 
+      InstanceTenancy: "default"
+      Tags:
+        - Key: "Name"
+          Value: "Webserver VPC"
+          
 
   
   # 4 Subnets, 2 public, 2 private, for ALB, EC2s and NAT 
@@ -49,7 +61,7 @@ Resources:
   PrivateSubnet2:
     Type: "AWS::EC2::Subnet"
     Properties:
-        AvailabilityZone: !Sub "${AWS::Region}a"
+        AvailabilityZone: !Sub "${AWS::Region}b"
         VpcId: !Ref WebServerVPC
         CidrBlock: !Ref PrivSubnet2
         Tags:
@@ -69,7 +81,7 @@ Resources:
   PublicSubnet2:
     Type: "AWS::EC2::Subnet"
     Properties:
-        AvailabilityZone: !Sub "${AWS::Region}a"
+        AvailabilityZone: !Sub "${AWS::Region}b"
         VpcId: !Ref WebServerVPC
         CidrBlock: !Ref PubSubnet2
         Tags:
@@ -90,11 +102,11 @@ Resources:
           FromPort: '80'
           ToPort: '80'
           CidrIp: 0.0.0.0/0
-        VpcId: !Ref WebServerVPC
-        Tags:
-          - Key: Name 
-            Value: alb-security-group
-  
+      VpcId: !Ref WebServerVPC
+      Tags:
+        - Key: Name 
+          Value: alb-security-group
+
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer 
     Properties:
@@ -112,8 +124,8 @@ Resources:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
     Properties:
       HealthCheckEnabled: true 
-      HealthCheackPatch: /index.html 
-      HealthCheckPort: 80 
+      HealthCheckPath: /index.html 
+      HealthCheckPort: '80' 
       HealthCheckProtocol: HTTP 
       Name: Webserver-Target-Group
       Port: 80
@@ -135,12 +147,12 @@ Resources:
   # Launch template -- change if you want to run a different kind of webserver
   # This one just tells you hello world and has some details about the instance
   ASGLaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate 
+    Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateName: !Sub ${AWS::StackName}-launch-template 
       LaunchTemplateData:
         CreditSpecification:
-          CpuCredits: Unlimited 
+          CpuCredits: "standard" 
         ImageId: !Ref AmiID 
         InstanceType: t2.micro 
         IamInstanceProfile:
@@ -149,169 +161,182 @@ Resources:
           Enabled: true 
         SecurityGroupIds:
           - !Ref WebServerSecurityGroup
-            !Ref SSMSG # For Systems Manager -- gotta do it Proper!
-        UserData:
-          Fn::Base64: !Sub | 
-            #!/bin/bash
-            yum update -y 
-            yum install -y httpd php 
-            echo '<h1>Hello World!</h1> > /var/www/html/index.html'
-            systemctl start httpd 
-            systemctl enable httpd 
-            usermod -a -G apache ec2-user 
-            chown -R ec2-user: apache /var/www 
-            chmod 2775 /var/www 
-            find /var/www -type d -exec chmod 2775 {} \;
-            find /var/www -type f -exec chmod 0664 {} \;
-
-            cat << 'EOF' > /var/www/html/index.php
-              <!DOCTYPE html> 
-              <html>
-              <body>
-                <center>
-
-                  <?php 
-                  $url = "http://169.254.169.254/latest/meta-data/instance-id";
-                  #instance_id = file_get_contents($url);
-                  $url = "http://169.254.169.254/latest/meta-data/placement/availability-zone";
-                  $zone = file_get_contents($url)
-                  ?>
-
-                  <h2>EC2 Instance ID: <?php echo $instance_id ?></h2>
-                  <h2>Availability Zone: <?php echo $zone ?></h2>
-
-                </center>
-              </body>
-              </html>
-            EOF
-          TagSpecifications:
+          - !Ref SSMSG # For Systems Manager -- gotta do it Proper!
+        TagSpecifications:
             - ResourceType: instance 
               Tags:
                 - Key: Name 
                   Value: webserver-inst
-          
+        UserData:
+          Fn::Base64: | 
+             #!/bin/bash -xe 
 
-        ASGInstanceProfile:
-          Type: "AWS::IAM::InstanceProfile"
-          Properties:
-            Path: "/"
-            Roles:
-              - 
-                Ref: WorkloadInstanceRole
-        
-        # Role for the webserver
-        WorkloadInstanceRole:
-          Type: AWS::IAM::Role 
-          Properties:
-            AssumeRolePolicyDocument:
-              Version: 2012-10-17
-              Statement:
-                -  
-                  Effect: Allow 
-                  Principal:
-                    Service: ec2.amazonaws.com
-                  Action: 'sts:AssumeRole'
-            ManagedPolicyArns:
-              - arn:aws:iam:aws:policy/AmazonSSMManagedInstanceCore 
-              - arn:aws:iam:poilcy/CloudWatchFullAccess 
+             yum update -y
+             yum install -y httpd24
+             echo "Welcome from the instance $(hostname -f" > /var/www/html/index.html
+             service httpd start
+
+  WebserverASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: Webserver-Auto-Scale
+      MinSize: '1'
+      MaxSize: '5'
+      DesiredCapacity: '2'
+      HealthCheckGracePeriod: 300
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ASGLaunchTemplate
+        Version: !GetAtt ASGLaunchTemplate.LatestVersionNumber 
         
 
-        # Endpoints and roles for SSM access -- don't just use ssh kids ;) 
-        SSMSG:
-          Type: AWS::EC2::SecurityGroup 
-          Properties: 
-            GroupDescription: Allow all 
-            VpcId: !Ref WebServerVPC 
-            SecurityGroupIngress:
-              - IpProtocol: -1 
-                FromPort: -1 
-                ToPort: -1 
-                CidrIp: 0.0.0.0/0 
-              Tags: 
-                - Key: Name 
-                  Value: ssm-sg
 
+  
 
-        SSMEndPoint:
-          Type: AWS::EC2::VPCEndpoint
-          Properties: 
-            PrivateDnsEnabled: 'true'
-            SecurityGroupIds:
-              - !Ref SSMSG
-            ServiceName:
-              !Join 
-              - ''
-              - - 'com.amazonaws.'
-                - !Ref 'AWS::Region'
-                - '.ssm'
-            SubnetIds:
-              - !Ref PrivateSubnet1 
-              - !Ref PrivateSubnet2 
-            VpcId: !Ref WebServerVPC
-            VpcEndpointType: Interface
+  # Internet Gateway & NAT Gateway
 
-        SSMMessagesEndPoint:
-          Type: AWS::EC2::VPCEndpoint
-          Properties:
-            PrivateDnsEnabled: 'true'
-            SecurityGroupIds:
-              - !Ref SSMSG
-            ServiceName:
-              !Join 
-              - ''
-              - - 'com.amazonaws.'
-                - !Ref 'AWS::Region'
-                - '.ssmmessages'
-            SubnetIds:
-              - !Ref PrivateSubnet1
-              - !Ref PrivateSubnet2 
-            VpcId: !Ref WebServerVPC
-            VpcEndpointType: Interface
+  InternetGW: 
+    Type: AWS::EC2::InternetGateway 
+  
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref WebServerVPC
+      InternetGatewayId: !Ref InternetGW
+
+  ASGInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Path: "/"
+      Roles:
+        - 
+          Ref: WorkloadInstanceRole
         
+  # Role for the webserver
+  WorkloadInstanceRole:
+    Type: AWS::IAM::Role 
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          -  
+            Effect: Allow 
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchFullAccess
 
-        EC2MessagesEndPoint:
-          Type: AWS::EC2::VPCEndpoint
-          Properties:
-            PrivateDnsEnabled: 'true'
-            SecurityGroupIds:
-              - !Ref SSMSG
-            ServiceName:
-              !Join
-                - ''
-                - - 'com.amazonaws.'
-                  - !Ref 'AWS::Region'
-                  - '.ec2messages'
-            SubnetIds:
-              - !Ref PrivateSubnet1
-              - !Ref PrivateSubnet2
-            VpcId: !Ref WebServerVPC
-            VpcEndpointType: Interface
+  WebServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup 
+    Properties:
+      GroupDescription: Enable HTTP access via port 80 
+      SecurityGroupIngress:
+        - IpProtocol: tcp 
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+      VpcId: !Ref WebServerVPC
+      Tags:
+        - Key: Name 
+          Value: web-server-sg
 
-        EC2EndPoint:
-          Type: AWS::EC2::VPCEndpoint
-          Properties:
-            PrivateDnsEnabled: 'true'
-            SecurityGroupIds:
-              - !Ref SSMSG
-            ServiceName:
-              !Join 
-              - ''
-              - - 'com.amazonaws.'
-                - !Ref 'AWS::Region'
-                - '.ec2'
-            SubnetIds:
-              - !Ref PrivateSubnet1 
-              - !Ref PrivateSubnet2
-            VpcId: !Ref WebServerVPC 
-            VpcEndpointType: Interface 
+  # Endpoints and roles for SSM access
+  SSMSG:
+    Type: AWS::EC2::SecurityGroup 
+    Properties: 
+      GroupDescription: Allow all 
+      VpcId: !Ref WebServerVPC 
+      SecurityGroupIngress:
+        - IpProtocol: '-1' 
+          FromPort: -1 
+          ToPort: -1 
+          CidrIp: '0.0.0.0/0'
+      Tags:
+        - Key: Name
+          Value: ssm-sg
 
-  Outputs:
-    VPCID:
-      Description: ID of the Web Server VPC 
-      Value: !Ref WebServerVPC
-      Export:
-        Name: !Sub "${AWS::StackName}-VPC"
-    
-    ALBDNSName:
-      Description: The DNS name of the application load balancer 
-      Value: !GetAtt ApplicationLoadBalancer.DNSName 
+
+  SSMEndPoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties: 
+      PrivateDnsEnabled: true
+      SecurityGroupIds:
+        - !Ref SSMSG
+      ServiceName:
+        !Join 
+        - ''
+        - - 'com.amazonaws.'
+          - !Ref 'AWS::Region'
+          - '.ssm'
+      SubnetIds:
+        - !Ref PrivateSubnet1 
+        - !Ref PrivateSubnet2 
+      VpcId: !Ref WebServerVPC
+      VpcEndpointType: Interface
+
+  SSMMessagesEndPoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: True
+      SecurityGroupIds:
+        - !Ref SSMSG
+      ServiceName:
+        !Join 
+        - ''
+        - - 'com.amazonaws.'
+          - !Ref 'AWS::Region'
+          - '.ssmmessages'
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2 
+      VpcId: !Ref WebServerVPC
+      VpcEndpointType: Interface
+
+
+  EC2MessagesEndPoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: 'true'
+      SecurityGroupIds:
+        - !Ref SSMSG
+      ServiceName:
+        !Join
+          - ''
+          - - 'com.amazonaws.'
+            - !Ref 'AWS::Region'
+            - '.ec2messages'
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      VpcId: !Ref WebServerVPC
+      VpcEndpointType: Interface
+
+  EC2EndPoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      PrivateDnsEnabled: True
+      SecurityGroupIds:
+        - !Ref SSMSG
+      ServiceName:
+        !Join 
+        - ''
+        - - 'com.amazonaws.'
+          - !Ref 'AWS::Region'
+          - '.ec2'
+      SubnetIds:
+        - !Ref PrivateSubnet1 
+        - !Ref PrivateSubnet2
+      VpcId: !Ref WebServerVPC 
+      VpcEndpointType: Interface 
+
+Outputs:
+  VPCID:
+    Description: ID of the Web Server VPC 
+    Value: !Ref WebServerVPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VPC"
+  
+  ALBDNSName:
+    Description: The DNS name of the application load balancer 
+    Value: !GetAtt ApplicationLoadBalancer.DNSName 
